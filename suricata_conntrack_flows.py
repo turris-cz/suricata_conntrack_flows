@@ -45,21 +45,20 @@ logging.basicConfig(stream=sys.stderr, level=logging.WARN)
 
 output_lock=Lock()
 
-def send_line(line):
+def output_locked(line):
     output_lock.acquire()
     try:
+        sys.stdout.write(line)
         if line[-1]!='\n':
-            print(line)
-        else:
-            sys.stdout.write(line)
-            sys.stdout.flush()
+            sys.stdout.write("\n")
+        sys.stdout.flush()
     except IOError as e:
         os.unlink(sys.argv[1])
         sys.exit(1)
     output_lock.release()
 
-def send_flow(json_dict):
-    send_line(json.dumps(json_dict))
+def output_flow(json_dict):
+    output_locked(json.dumps(json_dict)+"\n")
 
 def flow_key(src_ip, dest_ip, src_port, dest_port, proto):
     return str(proto.upper())+":"+src_ip+":"+str(src_port)+"->"+dest_ip+":"+str(dest_port)
@@ -102,13 +101,13 @@ class Conntrack_flows:
                         self.__active_flows[key]["__seen__"]=False
                     else:
                         logging.debug("bypassed flow closed: {}".format(str(self.__active_flows[key])))
-                        self.__send_flow(self.__active_flows[key])
+                        self.__output_flow(self.__active_flows[key])
                         to_delete.append(key)
                 for key in to_delete:
                     del self.__active_flows[key]
             self.__exit_cond.wait(5)
         for key in self.__active_flows.keys():
-            self.__send_flow(self.__active_flows[key])
+            self.__output_flow(self.__active_flows[key])
 
     def __parse_conntrack_line(self, line):
         """parses one line of conntrack - tries to match it to flow from __active_flows and update counters, timestamps and set __seen__ flag to True"""
@@ -139,10 +138,10 @@ class Conntrack_flows:
             self.__active_flows[key]["flow"]["bytes_toserver"]=matches.group(6)
             self.__active_flows[key]["flow"]["bytes_toclient"]=matches.group(8)
 
-    def __send_flow(self, data):
+    def __output_flow(self, data):
         del data["__seen__"]
         data["timestamp"]=suricata_timestamp()
-        send_flow(data)
+        output_flow(data)
 
     def add_new_flow(self, data):
         """add to queue __new_flows, they are moved to __active_flows in __run loop - to avoid locking __active_flows"""
@@ -181,22 +180,22 @@ def suricata_get_flow(recv_socket_path):
             continue
         l = datagram.decode()
         if "bypassed" not in l: #prefilter, we are interested only in bypassed flows, don't even care about the rest
-            send_line(l)
+            output_locked(l)
             continue
         data = json.loads(l)
         if data["event_type"] == "flow" and "flow" in data:
             proto=data["proto"]
             if proto != "TCP" and proto != "UDP":
-                send_line(l)
+                output_locked(l)
                 continue
             if data["flow"]["state"]!="bypassed":
-                send_line(l)
+                output_locked(l)
                 continue
             if "bypass" in data["flow"]:
                 del data["flow"]["bypass"]
             conn.add_new_flow(data)
         else: #if this is anything else then flow...
-            send_line(l) #...just resend immediatelly
+            output_locked(l) #...just resend immediatelly
 
 def exit_gracefully(signum, frame):
     logging.debug("asked to quit, sending all remaining flows")
